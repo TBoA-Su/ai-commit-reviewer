@@ -5,6 +5,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     private _view?: vscode.WebviewView;
     private _extensionUri: vscode.Uri;
     private _context: vscode.ExtensionContext;
+    private _currentDiff: string = '';
+    private _currentCommitHash: string = '';
 
     constructor(extensionUri: vscode.Uri, context: vscode.ExtensionContext) {
         this._extensionUri = extensionUri;
@@ -25,11 +27,13 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
         webviewView.webview.html = this._getHtmlForWebview(webviewView.webview);
 
-        // 处理来自 Webview 的消息
         webviewView.webview.onDidReceiveMessage(async (data) => {
             switch (data.type) {
                 case 'saveConfig':
                     await this._saveConfig(data.apiUrl, data.apiKey, data.model);
+                    break;
+                case 'getDiff':
+                    await this._getGitDiff();
                     break;
                 case 'review':
                     await this._performReview();
@@ -38,12 +42,10 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                     await this._sendConfigToWebview();
                     break;
                 case 'navigate':
-                    // 页面切换由前端处理，这里可以添加日志或状态管理
                     break;
             }
         });
 
-        // 初始化时发送配置
         this._sendConfigToWebview();
     }
 
@@ -56,7 +58,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         this._view?.webview.postMessage({
             type: 'config',
             apiUrl,
-            apiKey: apiKey ? '••••••••' : '', // 隐藏真实 key
+            apiKey: apiKey ? '••••••••' : '',
             model
         });
     }
@@ -64,7 +66,6 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     private async _saveConfig(apiUrl: string, apiKey: string, model: string) {
         const config = vscode.workspace.getConfiguration('aiCommitReviewer');
         
-        // 如果 key 是掩码，保留原值
         let finalKey = apiKey;
         if (apiKey.includes('•') || apiKey === '') {
             const currentKey = config.get<string>('apiKey') || '';
@@ -79,7 +80,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     }
 
     public async reviewCurrentCommit() {
-        await this._performReview();
+        await this._getGitDiff();
     }
 
     public refresh() {
@@ -87,23 +88,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         this._sendConfigToWebview();
     }
 
-    private async _performReview() {
+    private async _getGitDiff() {
         if (!this._view) return;
 
-        const config = vscode.workspace.getConfiguration('aiCommitReviewer');
-        const apiUrl = config.get<string>('apiUrl');
-        const apiKey = config.get<string>('apiKey');
-        const model = config.get<string>('model') || 'gpt-3.5-turbo';
-
-        if (!apiUrl || !apiKey) {
-            this._view.webview.postMessage({
-                type: 'error',
-                message: '请先配置 API 地址和 Key（点击右上角设置图标）'
-            });
-            return;
-        }
-
-        // 获取工作区路径
         const workspaceFolders = vscode.workspace.workspaceFolders;
         if (!workspaceFolders) {
             this._view.webview.postMessage({
@@ -118,45 +105,101 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         try {
             this._view.webview.postMessage({ type: 'loading', message: '正在获取代码变更...' });
 
-            // 获取 git diff
             const diff = await getGitDiff(rootPath);
             
             if (!diff || diff.trim() === '') {
                 this._view.webview.postMessage({
                     type: 'error',
-                    message: '没有检测到代码变更'
+                    message: '没有检测到代码变更。可能的原因：\n1. 当前没有 staged changes\n2. 最近 commit 是空提交\n3. 这是仓库的第一个提交\n\n提示：如果要审核已提交的代码，请确保有 parent commit（即至少有两个提交）'
                 });
                 return;
             }
 
             const commitHash = await getLastCommitHash(rootPath);
-            const shortHash = commitHash ? commitHash.substring(0, 7) : 'working tree';
-
-            this._view.webview.postMessage({ 
-                type: 'loading', 
-                message: `正在审核 ${shortHash} 的代码变更...` 
-            });
-
-            // 调用 AI API
-            const reviewResult = await this._callAI(apiUrl, apiKey, model, diff);
+            this._currentCommitHash = commitHash ? commitHash.substring(0, 7) : 'working tree';
+            this._currentDiff = diff;
 
             this._view.webview.postMessage({
-                type: 'reviewResult',
-                commitHash: shortHash,
-                result: reviewResult,
-                diff: diff.substring(0, 2000) + (diff.length > 2000 ? '...' : '') // 截断显示
+                type: 'diffPreview',
+                commitHash: this._currentCommitHash,
+                diff: diff,
+                stats: this._analyzeDiff(diff)
             });
 
         } catch (error: any) {
             this._view.webview.postMessage({
                 type: 'error',
-                message: `审核失败: ${error.message}`
+                message: `获取失败: ${error.message}`
+            });
+        }
+    }
+
+    private _analyzeDiff(diff: string): { files: number; additions: number; deletions: number } {
+        const lines = diff.split('\n');
+        let files = 0;
+        let additions = 0;
+        let deletions = 0;
+
+        for (const line of lines) {
+            if (line.startsWith('diff --git')) {
+                files++;
+            } else if (line.startsWith('+') && !line.startsWith('+++')) {
+                additions++;
+            } else if (line.startsWith('-') && !line.startsWith('---')) {
+                deletions++;
+            }
+        }
+
+        return { files, additions, deletions };
+    }
+
+    private async _performReview() {
+        if (!this._view) return;
+
+        const config = vscode.workspace.getConfiguration('aiCommitReviewer');
+        const apiUrl = config.get<string>('apiUrl');
+        const apiKey = config.get<string>('apiKey');
+        const model = config.get<string>('model') || 'gpt-3.5-turbo';
+
+        if (!apiUrl || !apiKey) {
+            this._view.webview.postMessage({
+                type: 'error',
+                message: '请先配置 API 地址和 Key（切换到设置页面）'
+            });
+            return;
+        }
+
+        if (!this._currentDiff) {
+            this._view.webview.postMessage({
+                type: 'error',
+                message: '请先获取代码变更'
+            });
+            return;
+        }
+
+        try {
+            this._view.webview.postMessage({ 
+                type: 'reviewing', 
+                message: `正在将代码发送给 ${model} 进行质量评估...` 
+            });
+
+            const reviewResult = await this._callAI(apiUrl, apiKey, model, this._currentDiff);
+
+            this._view.webview.postMessage({
+                type: 'reviewResult',
+                commitHash: this._currentCommitHash,
+                result: reviewResult
+            });
+
+        } catch (error: any) {
+            this._view.webview.postMessage({
+                type: 'error',
+                message: `AI 审核失败: ${error.message}`
             });
         }
     }
 
     private async _callAI(apiUrl: string, apiKey: string, model: string, diff: string): Promise<string> {
-        // 定义 API 响应类型
         interface AIResponse {
             choices?: Array<{
                 message?: { content: string };
@@ -164,36 +207,58 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
             }>;
         }
 
-        const prompt = `请作为资深代码审查员，对以下 Git diff 进行详细审查。请从以下几个方面分析：
-1. 代码质量和规范性
-2. 潜在的错误或漏洞
-3. 性能问题
-4. 安全性和最佳实践
-5. 改进建议
+        const prompt = `请作为资深代码审查专家，对以下 Git diff 中的代码更改进行全面的质量评估。
 
-Git Diff:
+## 审查要求
+请从以下几个维度进行详细分析：
+
+1. **代码质量**
+   - 代码可读性和可维护性
+   - 是否符合编程规范（命名、格式、结构）
+   - 是否有重复代码或可以重构的部分
+
+2. **潜在问题**
+   - 是否存在逻辑错误
+   - 是否有空指针、数组越界等常见错误
+   - 异常处理是否完善
+
+3. **性能影响**
+   - 是否有性能瓶颈
+   - 算法复杂度是否合理
+   - 是否有不必要的资源消耗
+
+4. **安全性**
+   - 是否存在安全漏洞
+   - 敏感信息是否被正确处理
+   - 输入验证是否充分
+
+5. **改进建议**
+   - 具体的优化建议
+   - 更好的实现方式
+   - 需要注意的最佳实践
+
+## Git Diff 内容
 \`\`\`diff
 ${diff}
 \`\`\`
 
-请以结构化的方式给出审查意见，使用 Markdown 格式。`;
+请以结构化的 Markdown 格式输出审查结果，使用中文。对于发现的问题，请标注严重程度（严重/警告/建议）。`;
 
-        // 支持 OpenAI 格式和通用格式
         const isOpenAIFormat = apiUrl.includes('openai.com') || apiUrl.includes('api.openai');
         
         const body = isOpenAIFormat ? {
             model: model,
             messages: [
-                { role: 'system', content: '你是一个专业的代码审查助手。' },
+                { role: 'system', content: '你是一位专业的代码审查专家，擅长发现代码中的问题并提供建设性的改进建议。' },
                 { role: 'user', content: prompt }
             ],
-            temperature: 0.7,
+            temperature: 0.3,
             max_tokens: 4000
         } : {
             model: model,
             prompt: prompt,
             max_tokens: 4000,
-            temperature: 0.7
+            temperature: 0.3
         };
 
         const response = await fetch(apiUrl, {
@@ -212,7 +277,6 @@ ${diff}
 
         const data = await response.json() as AIResponse;
         
-        // 解析不同格式的响应
         if (data.choices && data.choices[0]) {
             if (data.choices[0].message) {
                 return data.choices[0].message.content;
@@ -243,12 +307,14 @@ ${diff}
             `            line-height: 1.6;`,
             `        }`,
             `        `,
-            `        /* 导航栏 */`,
             `        .navbar {`,
             `            display: flex;`,
             `            background: var(--vscode-editor-background);`,
             `            border-bottom: 1px solid var(--vscode-panel-border);`,
             `            padding: 0 8px;`,
+            `            position: sticky;`,
+            `            top: 0;`,
+            `            z-index: 100;`,
             `        }`,
             `        .nav-tab {`,
             `            flex: 1;`,
@@ -275,7 +341,6 @@ ${diff}
             `            color: var(--vscode-button-background);`,
             `        }`,
             `        `,
-            `        /* 页面容器 */`,
             `        .page {`,
             `            display: none;`,
             `            padding: 16px;`,
@@ -284,9 +349,8 @@ ${diff}
             `            display: block;`,
             `        }`,
             `        `,
-            `        /* 内容区域 */`,
             `        .section {`,
-            `            margin-bottom: 20px;`,
+            `            margin-bottom: 16px;`,
             `            background: var(--vscode-editor-background);`,
             `            border-radius: 8px;`,
             `            padding: 16px;`,
@@ -297,6 +361,12 @@ ${diff}
             `            font-weight: 600;`,
             `            margin-bottom: 12px;`,
             `            color: var(--vscode-foreground);`,
+            `            display: flex;`,
+            `            align-items: center;`,
+            `            justify-content: space-between;`,
+            `            gap: 6px;`,
+            `        }`,
+            `        .section-title-left {`,
             `            display: flex;`,
             `            align-items: center;`,
             `            gap: 6px;`,
@@ -310,9 +380,7 @@ ${diff}
             `            font-weight: 500;`,
             `        }`,
             `        input[type="text"],`,
-            `        input[type="password"],`,
-            `        select,`,
-            `        textarea {`,
+            `        input[type="password"] {`,
             `            width: 100%;`,
             `            padding: 8px 10px;`,
             `            border: 1px solid var(--vscode-input-border);`,
@@ -322,15 +390,8 @@ ${diff}
             `            font-size: 13px;`,
             `            outline: none;`,
             `            transition: border-color 0.2s;`,
-            `            font-family: var(--vscode-font-family);`,
             `        }`,
-            `        textarea {`,
-            `            min-height: 100px;`,
-            `            resize: vertical;`,
-            `        }`,
-            `        input:focus,`,
-            `        select:focus,`,
-            `        textarea:focus { border-color: var(--vscode-focusBorder); }`,
+            `        input:focus { border-color: var(--vscode-focusBorder); }`,
             `        .btn {`,
             `            width: 100%;`,
             `            padding: 10px;`,
@@ -355,14 +416,64 @@ ${diff}
             `            color: var(--vscode-button-secondaryForeground);`,
             `            margin-top: 8px;`,
             `        }`,
-            `        .btn-secondary:hover { background: var(--vscode-button-secondaryHoverBackground); }`,
             `        .btn-success {`,
             `            background: var(--vscode-testing-iconPassed);`,
             `            color: white;`,
-            `            margin-top: 16px;`,
             `        }`,
-            `        .result-container { display: none; margin-top: 16px; }`,
-            `        .result-container.active { display: block; }`,
+            `        .btn:disabled {`,
+            `            opacity: 0.6;`,
+            `            cursor: not-allowed;`,
+            `        }`,
+            `        .diff-container {`,
+            `            background: var(--vscode-textCodeBlock-background);`,
+            `            border-radius: 6px;`,
+            `            overflow: hidden;`,
+            `            margin-top: 12px;`,
+            `        }`,
+            `        .diff-header {`,
+            `            background: var(--vscode-titleBar-activeBackground);`,
+            `            padding: 8px 12px;`,
+            `            font-size: 11px;`,
+            `            font-family: monospace;`,
+            `            border-bottom: 1px solid var(--vscode-panel-border);`,
+            `            display: flex;`,
+            `            justify-content: space-between;`,
+            `            align-items: center;`,
+            `        }`,
+            `        .diff-stats {`,
+            `            display: flex;`,
+            `            gap: 12px;`,
+            `            font-size: 11px;`,
+            `        }`,
+            `        .stat-additions { color: var(--vscode-gitDecoration-addedResourceForeground); }`,
+            `        .stat-deletions { color: var(--vscode-gitDecoration-deletedResourceForeground); }`,
+            `        .diff-content {`,
+            `            padding: 12px;`,
+            `            font-family: var(--vscode-editor-font-family);`,
+            `            font-size: 12px;`,
+            `            max-height: 300px;`,
+            `            overflow-y: auto;`,
+            `            white-space: pre-wrap;`,
+            `            word-break: break-all;`,
+            `            line-height: 1.5;`,
+            `        }`,
+            `        .diff-line {`,
+            `            padding: 1px 4px;`,
+            `            margin: 0 -12px;`,
+            `            padding-left: 12px;`,
+            `        }`,
+            `        .diff-addition {`,
+            `            background: var(--vscode-diffEditor-insertedLineBackground);`,
+            `            color: var(--vscode-gitDecoration-addedResourceForeground);`,
+            `        }`,
+            `        .diff-deletion {`,
+            `            background: var(--vscode-diffEditor-removedLineBackground);`,
+            `            color: var(--vscode-gitDecoration-deletedResourceForeground);`,
+            `        }`,
+            `        .diff-meta {`,
+            `            color: var(--vscode-descriptionForeground);`,
+            `            font-weight: 600;`,
+            `        }`,
             `        .loading {`,
             `            display: none;`,
             `            text-align: center;`,
@@ -406,6 +517,8 @@ ${diff}
             `            margin-bottom: 8px;`,
             `            color: var(--vscode-foreground);`,
             `        }`,
+            `        .review-result h1 { font-size: 16px; border-bottom: 1px solid var(--vscode-panel-border); padding-bottom: 8px; }`,
+            `        .review-result h2 { font-size: 14px; color: var(--vscode-button-background); }`,
             `        .review-result code {`,
             `            background: var(--vscode-textCodeBlock-background);`,
             `            padding: 2px 6px;`,
@@ -420,68 +533,66 @@ ${diff}
             `            overflow-x: auto;`,
             `            margin: 8px 0;`,
             `        }`,
-            `        .commit-info {`,
+            `        .commit-badge {`,
             `            background: var(--vscode-badge-background);`,
             `            color: var(--vscode-badge-foreground);`,
             `            padding: 4px 8px;`,
             `            border-radius: 4px;`,
             `            font-size: 11px;`,
             `            font-family: monospace;`,
-            `            margin-bottom: 12px;`,
-            `            display: inline-block;`,
-            `        }`,
-            `        .diff-preview {`,
-            `            background: var(--vscode-textCodeBlock-background);`,
-            `            padding: 12px;`,
-            `            border-radius: 4px;`,
-            `            font-family: var(--vscode-editor-font-family);`,
-            `            font-size: 11px;`,
-            `            max-height: 200px;`,
-            `            overflow-y: auto;`,
-            `            margin-bottom: 16px;`,
-            `            white-space: pre-wrap;`,
-            `            word-break: break-all;`,
-            `            color: var(--vscode-descriptionForeground);`,
-            `        }`,
-            `        .diff-preview::-webkit-scrollbar { width: 8px; height: 8px; }`,
-            `        .diff-preview::-webkit-scrollbar-thumb {`,
-            `            background: var(--vscode-scrollbarSlider-background);`,
-            `            border-radius: 4px;`,
-            `        }`,
-            `        .status-badge {`,
-            `            display: inline-flex;`,
-            `            align-items: center;`,
-            `            gap: 4px;`,
-            `            padding: 4px 8px;`,
-            `            border-radius: 4px;`,
-            `            font-size: 11px;`,
-            `            font-weight: 600;`,
-            `            margin-bottom: 12px;`,
-            `        }`,
-            `        .status-success {`,
-            `            background: var(--vscode-testing-iconPassed);`,
-            `            color: white;`,
-            `        }`,
-            `        .status-error {`,
-            `            background: var(--vscode-testing-iconFailed);`,
-            `            color: white;`,
-            `        }`,
-            `        .icon {`,
-            `            width: 16px;`,
-            `            height: 16px;`,
-            `            display: inline-flex;`,
-            `            align-items: center;`,
-            `            justify-content: center;`,
             `        }`,
             `        .hint {`,
             `            font-size: 11px;`,
             `            color: var(--vscode-descriptionForeground);`,
             `            margin-top: 4px;`,
             `        }`,
+            `        .step-indicator {`,
+            `            display: flex;`,
+            `            align-items: center;`,
+            `            gap: 8px;`,
+            `            margin-bottom: 16px;`,
+            `            padding: 12px;`,
+            `            background: var(--vscode-editor-background);`,
+            `            border-radius: 6px;`,
+            `            border: 1px solid var(--vscode-panel-border);`,
+            `        }`,
+            `        .step {`,
+            `            display: flex;`,
+            `            align-items: center;`,
+            `            gap: 6px;`,
+            `            font-size: 12px;`,
+            `            color: var(--vscode-descriptionForeground);`,
+            `        }`,
+            `        .step.active {`,
+            `            color: var(--vscode-button-background);`,
+            `            font-weight: 600;`,
+            `        }`,
+            `        .step-number {`,
+            `            width: 20px;`,
+            `            height: 20px;`,
+            `            border-radius: 50%;`,
+            `            background: var(--vscode-badge-background);`,
+            `            color: var(--vscode-badge-foreground);`,
+            `            display: flex;`,
+            `            align-items: center;`,
+            `            justify-content: center;`,
+            `            font-size: 11px;`,
+            `            font-weight: 700;`,
+            `        }`,
+            `        .step.active .step-number {`,
+            `            background: var(--vscode-button-background);`,
+            `            color: var(--vscode-button-foreground);`,
+            `        }`,
+            `        .step-divider {`,
+            `            flex: 1;`,
+            `            height: 1px;`,
+            `            background: var(--vscode-panel-border);`,
+            `            max-width: 30px;`,
+            `        }`,
+            `        .hidden { display: none !important; }`,
             `    </style>`,
             `</head>`,
             `<body>`,
-            `    <!-- 导航栏 -->`,
             `    <div class="navbar">`,
             `        <button class="nav-tab active" data-page="review">`,
             `            <span>🔍</span> 代码审核`,
@@ -491,19 +602,65 @@ ${diff}
             `        </button>`,
             `    </div>`,
             ``,
-            `    <!-- 代码审核页面 -->`,
             `    <div id="reviewPage" class="page active">`,
-            `        <div class="section">`,
-            `            <div class="section-title">`,
-            `                <span class="icon">🚀</span>`,
-            `                开始审核`,
+            `        <div class="step-indicator">`,
+            `            <div class="step active" id="step1">`,
+            `                <div class="step-number">1</div>`,
+            `                <span>获取 Diff</span>`,
             `            </div>`,
-            `            <p style="font-size: 12px; color: var(--vscode-descriptionForeground); margin-bottom: 12px;">`,
-            `                点击按钮审核当前 Git 变更（staged 或最近 commit）`,
-            `            </p>`,
-            `            <button class="btn btn-primary" id="reviewBtn">`,
-            `                <span>🔍</span> 审核最新 Commit`,
-            `            </button>`,
+            `            <div class="step-divider"></div>`,
+            `            <div class="step" id="step2">`,
+            `                <div class="step-number">2</div>`,
+            `                <span>AI 评估</span>`,
+            `            </div>`,
+            `        </div>`,
+            ``,
+            `        <div id="diffSection">`,
+            `            <div class="section">`,
+            `                <div class="section-title">`,
+            `                    <div class="section-title-left">`,
+            `                        <span>📋</span>`,
+            `                        <span>获取 Git 变更</span>`,
+            `                    </div>`,
+            `                </div>`,
+            `                <p style="font-size: 12px; color: var(--vscode-descriptionForeground); margin-bottom: 12px;">`,
+            `                    点击按钮获取当前代码变更（staged changes 或最近 commit）`,
+            `                </p>`,
+            `                <button class="btn btn-primary" id="getDiffBtn">`,
+            `                    <span>📥</span> 获取代码变更`,
+            `                </button>`,
+            `            </div>`,
+            `        </div>`,
+            ``,
+            `        <div id="diffPreviewSection" class="hidden">`,
+            `            <div class="section">`,
+            `                <div class="section-title">`,
+            `                    <div class="section-title-left">`,
+            `                        <span>📝</span>`,
+            `                        <span>代码变更预览</span>`,
+            `                    </div>`,
+            `                    <span class="commit-badge" id="commitBadge"></span>`,
+            `                </div>`,
+            `                <div class="diff-container">`,
+            `                    <div class="diff-header">`,
+            `                        <span>变更统计</span>`,
+            `                        <div class="diff-stats">`,
+            `                            <span id="statFiles"></span>`,
+            `                            <span class="stat-additions" id="statAdditions"></span>`,
+            `                            <span class="stat-deletions" id="statDeletions"></span>`,
+            `                        </div>`,
+            `                    </div>`,
+            `                    <div class="diff-content" id="diffContent"></div>`,
+            `                </div>`,
+            `                <div style="margin-top: 12px; display: flex; gap: 8px;">`,
+            `                    <button class="btn btn-success" id="reviewBtn" style="flex: 1;">`,
+            `                        <span>🤖</span> 发送给 AI 评估`,
+            `                    </button>`,
+            `                    <button class="btn btn-secondary" id="refreshDiffBtn" style="flex: 0 0 auto; width: auto; padding: 10px 16px; margin-top: 0;">`,
+            `                        <span>🔄</span>`,
+            `                    </button>`,
+            `                </div>`,
+            `            </div>`,
             `        </div>`,
             ``,
             `        <div class="loading" id="loading">`,
@@ -513,31 +670,33 @@ ${diff}
             ``,
             `        <div class="error" id="error"></div>`,
             ``,
-            `        <div class="result-container" id="result">`,
+            `        <div id="reviewResultSection" class="hidden">`,
             `            <div class="section">`,
             `                <div class="section-title">`,
-            `                    <span class="icon">📋</span>`,
-            `                    审核结果`,
+            `                    <div class="section-title-left">`,
+            `                        <span>✅</span>`,
+            `                        <span>AI 代码质量评估</span>`,
+            `                    </div>`,
+            `                    <span class="commit-badge" id="resultCommitBadge"></span>`,
             `                </div>`,
-            `                <div class="commit-info" id="commitHash"></div>`,
-            `                <div class="diff-preview" id="diffPreview"></div>`,
             `                <div class="review-result" id="reviewContent"></div>`,
+            `                <button class="btn btn-secondary" id="newReviewBtn" style="margin-top: 12px;">`,
+            `                    <span>🔄</span> 开始新的审核`,
+            `                </button>`,
             `            </div>`,
             `        </div>`,
             `    </div>`,
             ``,
-            `    <!-- 设置页面 -->`,
             `    <div id="settingsPage" class="page">`,
             `        <div class="section">`,
             `            <div class="section-title">`,
-            `                <span class="icon">🔑</span>`,
-            `                API 配置`,
+            `                <span>🔑</span> API 配置`,
             `            </div>`,
             `            `,
             `            <div class="form-group">`,
             `                <label>API 地址</label>`,
             `                <input type="text" id="apiUrl" placeholder="https://api.openai.com/v1/chat/completions">`,
-            `                <div class="hint">支持 OpenAI、Azure、Claude 等兼容 API</div>`,
+            `                <div class="hint">支持 OpenAI、Azure、Claude、本地模型等兼容 API</div>`,
             `            </div>`,
             `            `,
             `            <div class="form-group">`,
@@ -547,32 +706,42 @@ ${diff}
             `            </div>`,
             `            `,
             `            <div class="form-group">`,
-            `                <label>模型</label>`,
-            `                <select id="model">`,
-            `                    <option value="gpt-3.5-turbo">GPT-3.5 Turbo</option>`,
-            `                    <option value="gpt-4">GPT-4</option>`,
-            `                    <option value="gpt-4-turbo">GPT-4 Turbo</option>`,
-            `                    <option value="claude-3-opus-20240229">Claude 3 Opus</option>`,
-            `                    <option value="claude-3-sonnet-20240229">Claude 3 Sonnet</option>`,
-            `                    <option value="custom">自定义</option>`,
-            `                </select>`,
+            `                <label>模型名称</label>`,
+            `                <input type="text" id="model" list="modelList" placeholder="输入模型名称，如 gpt-4、claude-3-opus...">`,
+            `                <datalist id="modelList">`,
+            `                    <option value="gpt-3.5-turbo">`,
+            `                    <option value="gpt-4">`,
+            `                    <option value="gpt-4-turbo">`,
+            `                    <option value="gpt-4o">`,
+            `                    <option value="gpt-4o-mini">`,
+            `                    <option value="claude-3-opus-20240229">`,
+            `                    <option value="claude-3-sonnet-20240229">`,
+            `                    <option value="claude-3-haiku-20240307">`,
+            `                    <option value="claude-3-5-sonnet-20241022">`,
+            `                    <option value="llama3-8b">`,
+            `                    <option value="llama3-70b">`,
+            `                    <option value="qwen-turbo">`,
+            `                    <option value="qwen-max">`,
+            `                    <option value="deepseek-chat">`,
+            `                    <option value="deepseek-coder">`,
+            `                </datalist>`,
+            `                <div class="hint">支持任意模型：OpenAI、Claude、Llama、通义千问、DeepSeek 等</div>`,
             `            </div>`,
             ``,
-            `            <button class="btn btn-success" id="saveBtn">`,
+            `            <button class="btn btn-primary" id="saveBtn">`,
             `                <span>💾</span> 保存配置`,
             `            </button>`,
             `        </div>`,
             ``,
             `        <div class="section">`,
             `            <div class="section-title">`,
-            `                <span class="icon">ℹ️</span>`,
-            `                使用说明`,
+            `                <span>ℹ️</span> 使用说明`,
             `            </div>`,
             `            <div style="font-size: 12px; color: var(--vscode-descriptionForeground); line-height: 1.8;">`,
             `                <p><strong>1.</strong> 在设置页面配置您的 AI API 信息</p>`,
-            `                <p><strong>2.</strong> 返回代码审核页面点击"审核"按钮</p>`,
-            `                <p><strong>3.</strong> 系统会自动检测 staged changes 或最近 commit</p>`,
-            `                <p><strong>4.</strong> AI 将分析代码质量、潜在问题和改进建议</p>`,
+            `                <p><strong>2.</strong> 返回代码审核页面，点击"获取代码变更"</p>`,
+            `                <p><strong>3.</strong> 预览 diff 确认无误后，点击"发送给 AI 评估"</p>`,
+            `                <p><strong>4.</strong> 查看 AI 的代码质量分析报告</p>`,
             `            </div>`,
             `        </div>`,
             `    </div>`,
@@ -580,124 +749,182 @@ ${diff}
             `    <script>`,
             `        const vscode = acquireVsCodeApi();`,
             `        `,
-            `        // 页面元素`,
             `        const navTabs = document.querySelectorAll('.nav-tab');`,
             `        const pages = document.querySelectorAll('.page');`,
             `        `,
-            `        // 审核页面元素`,
-            `        const reviewBtn = document.getElementById('reviewBtn');`,
+            `        const diffSection = document.getElementById('diffSection');`,
+            `        const diffPreviewSection = document.getElementById('diffPreviewSection');`,
+            `        const reviewResultSection = document.getElementById('reviewResultSection');`,
             `        const loading = document.getElementById('loading');`,
             `        const loadingText = document.getElementById('loadingText');`,
             `        const error = document.getElementById('error');`,
-            `        const result = document.getElementById('result');`,
-            `        const commitHash = document.getElementById('commitHash');`,
-            `        const diffPreview = document.getElementById('diffPreview');`,
+            `        `,
+            `        const getDiffBtn = document.getElementById('getDiffBtn');`,
+            `        const reviewBtn = document.getElementById('reviewBtn');`,
+            `        const refreshDiffBtn = document.getElementById('refreshDiffBtn');`,
+            `        const newReviewBtn = document.getElementById('newReviewBtn');`,
+            `        `,
+            `        const commitBadge = document.getElementById('commitBadge');`,
+            `        const statFiles = document.getElementById('statFiles');`,
+            `        const statAdditions = document.getElementById('statAdditions');`,
+            `        const statDeletions = document.getElementById('statDeletions');`,
+            `        const diffContent = document.getElementById('diffContent');`,
+            `        const resultCommitBadge = document.getElementById('resultCommitBadge');`,
             `        const reviewContent = document.getElementById('reviewContent');`,
             `        `,
-            `        // 设置页面元素`,
+            `        const step1 = document.getElementById('step1');`,
+            `        const step2 = document.getElementById('step2');`,
+            `        `,
             `        const apiUrlInput = document.getElementById('apiUrl');`,
             `        const apiKeyInput = document.getElementById('apiKey');`,
-            `        const modelSelect = document.getElementById('model');`,
             `        const saveBtn = document.getElementById('saveBtn');`,
             ``,
-            `        // 导航切换`,
             `        navTabs.forEach(tab => {`,
             `            tab.addEventListener('click', () => {`,
             `                const targetPage = tab.dataset.page;`,
-            `                `,
-            `                // 更新标签状态`,
             `                navTabs.forEach(t => t.classList.remove('active'));`,
             `                tab.classList.add('active');`,
-            `                `,
-            `                // 切换页面`,
             `                pages.forEach(page => page.classList.remove('active'));`,
             `                document.getElementById(targetPage + 'Page').classList.add('active');`,
-            `                `,
-            `                vscode.postMessage({ type: 'navigate', page: targetPage });`,
             `            });`,
             `        });`,
             ``,
-            `        // 初始化`,
             `        vscode.postMessage({ type: 'getConfig' });`,
             ``,
-            `        // 保存配置`,
-            `        saveBtn.addEventListener('click', () => {`,
-            `            let model = modelSelect.value;`,
-            `            if (model === 'custom') {`,
-            `                const custom = prompt('请输入自定义模型名称:', 'gpt-3.5-turbo');`,
-            `                if (custom) model = custom;`,
-            `            }`,
-            `                `,
-            `            vscode.postMessage({`,
-            `                type: 'saveConfig',`,
-            `                apiUrl: apiUrlInput.value,`,
-            `                apiKey: apiKeyInput.value,`,
-            `                model: model`,
-            `            });`,
+            `        getDiffBtn.addEventListener('click', () => {`,
+            `            vscode.postMessage({ type: 'getDiff' });`,
             `        });`,
             ``,
-            `        // 开始审核`,
+            `        refreshDiffBtn.addEventListener('click', () => {`,
+            `            resetToStep1();`,
+            `            vscode.postMessage({ type: 'getDiff' });`,
+            `        });`,
+            ``,
             `        reviewBtn.addEventListener('click', () => {`,
             `            vscode.postMessage({ type: 'review' });`,
             `        });`,
             ``,
-            `        // 处理消息`,
-            `        window.addEventListener('message', event => {`,
-            `            const message = event.data;`,
+            `        newReviewBtn.addEventListener('click', () => {`,
+            `            resetToStep1();`,
+            `        });`,
+            ``,
+            `        saveBtn.addEventListener('click', () => {`,
+            `            const modelValue = document.getElementById('model').value.trim();`,
             `            `,
-            `            switch (message.type) {`,
+            `            vscode.postMessage({`,
+            `                type: 'saveConfig',`,
+            `                apiUrl: apiUrlInput.value,`,
+            `                apiKey: apiKeyInput.value,`,
+            `                model: modelValue || 'gpt-3.5-turbo'`,
+            `            });`,
+            `        });`,
+            ``,
+            `        function resetToStep1() {`,
+            `            diffSection.classList.remove('hidden');`,
+            `            diffPreviewSection.classList.add('hidden');`,
+            `            reviewResultSection.classList.add('hidden');`,
+            `            error.classList.remove('active');`,
+            `            step1.classList.add('active');`,
+            `            step2.classList.remove('active');`,
+            `        }`,
+            ``,
+            `        window.addEventListener('message', event => {`,
+            `            const msg = event.data;`,
+            `            `,
+            `            switch (msg.type) {`,
             `                case 'config':`,
-            `                    if (message.apiUrl) apiUrlInput.value = message.apiUrl;`,
-            `                    if (message.apiKey) {`,
-            `                        apiKeyInput.value = message.apiKey;`,
+            `                    if (msg.apiUrl) apiUrlInput.value = msg.apiUrl;`,
+            `                    if (msg.apiKey) {`,
+            `                        apiKeyInput.value = msg.apiKey;`,
             `                        apiKeyInput.placeholder = '已配置 (点击修改)';`,
             `                    }`,
-            `                    if (message.model) {`,
-            `                        const exists = [...modelSelect.options].some(o => o.value === message.model);`,
-            `                        if (exists) {`,
-            `                            modelSelect.value = message.model;`,
-            `                        } else {`,
-            `                            const opt = document.createElement('option');`,
-            `                            opt.value = message.model;`,
-            `                            opt.text = message.model;`,
-            `                            modelSelect.add(opt);`,
-            `                            modelSelect.value = message.model;`,
-            `                        }`,
+            `                    if (msg.model) {`,
+            `                        document.getElementById('model').value = msg.model;`,
             `                    }`,
             `                    break;`,
             `                    `,
             `                case 'loading':`,
             `                    loading.classList.add('active');`,
             `                    error.classList.remove('active');`,
-            `                    result.classList.remove('active');`,
-            `                    loadingText.textContent = message.message;`,
+            `                    loadingText.textContent = msg.message;`,
+            `                    getDiffBtn.disabled = true;`,
+            `                    break;`,
+            `                    `,
+            `                case 'diffPreview':`,
+            `                    loading.classList.remove('active');`,
+            `                    error.classList.remove('active');`,
+            `                    getDiffBtn.disabled = false;`,
+            `                    `,
+            `                    diffSection.classList.add('hidden');`,
+            `                    diffPreviewSection.classList.remove('hidden');`,
+            `                    reviewResultSection.classList.add('hidden');`,
+            `                    `,
+            `                    step1.classList.add('active');`,
+            `                    step2.classList.remove('active');`,
+            `                    `,
+            `                    commitBadge.textContent = msg.commitHash;`,
+            `                    statFiles.textContent = msg.stats.files + ' 个文件';`,
+            `                    statAdditions.textContent = '+' + msg.stats.additions;`,
+            `                    statDeletions.textContent = '-' + msg.stats.deletions;`,
+            `                    diffContent.innerHTML = formatDiff(msg.diff);`,
+            `                    break;`,
+            `                    `,
+            `                case 'reviewing':`,
+            `                    loading.classList.add('active');`,
+            `                    error.classList.remove('active');`,
+            `                    loadingText.textContent = msg.message;`,
             `                    reviewBtn.disabled = true;`,
             `                    break;`,
             `                    `,
             `                case 'error':`,
             `                    loading.classList.remove('active');`,
             `                    error.classList.add('active');`,
-            `                    error.textContent = message.message;`,
+            `                    error.textContent = msg.message;`,
+            `                    getDiffBtn.disabled = false;`,
             `                    reviewBtn.disabled = false;`,
             `                    break;`,
             `                    `,
             `                case 'reviewResult':`,
             `                    loading.classList.remove('active');`,
-            `                    result.classList.add('active');`,
-            `                    commitHash.textContent = 'Commit: ' + message.commitHash;`,
-            `                    diffPreview.textContent = message.diff;`,
-            `                    reviewContent.innerHTML = markdownToHtml(message.result);`,
+            `                    error.classList.remove('active');`,
             `                    reviewBtn.disabled = false;`,
+            `                    `,
+            `                    diffPreviewSection.classList.add('hidden');`,
+            `                    reviewResultSection.classList.remove('hidden');`,
+            `                    `,
+            `                    step1.classList.remove('active');`,
+            `                    step2.classList.add('active');`,
+            `                    `,
+            `                    resultCommitBadge.textContent = msg.commitHash;`,
+            `                    reviewContent.innerHTML = markdownToHtml(msg.result);`,
             `                    break;`,
             `                    `,
             `                case 'clear':`,
-            `                    result.classList.remove('active');`,
-            `                    error.classList.remove('active');`,
+            `                    resetToStep1();`,
             `                    break;`,
             `            }`,
             `        });`,
             ``,
-            `        // Markdown 转 HTML`,
+            `        function formatDiff(diff) {`,
+            `            return diff.split('\\n').map(line => {`,
+            `                let className = 'diff-line';`,
+            `                if (line.startsWith('+') && !line.startsWith('+++')) {`,
+            `                    className += ' diff-addition';`,
+            `                } else if (line.startsWith('-') && !line.startsWith('---')) {`,
+            `                    className += ' diff-deletion';`,
+            `                } else if (line.startsWith('diff ') || line.startsWith('index ') || line.startsWith('@@')) {`,
+            `                    className += ' diff-meta';`,
+            `                }`,
+            `                return '<div class="' + className + '">' + escapeHtml(line) + '</div>';`,
+            `            }).join('');`,
+            `        }`,
+            ``,
+            `        function escapeHtml(text) {`,
+            `            const div = document.createElement('div');`,
+            `            div.textContent = text;`,
+            `            return div.innerHTML;`,
+            `        }`,
+            ``,
             `        function markdownToHtml(md) {`,
             `            return md`,
             `                .replace(/^### (.*$)/gim, '<h3>$1</h3>')`,
@@ -708,7 +935,6 @@ ${diff}
             `                .replace(/\\*(.*?)\\*/gim, '<em>$1</em>')`,
             `                .replace(/~~(.*?)~~/gim, '<del>$1</del>')`,
             `                .replace(/\`\`\`([\\s\\S]*?)\`\`\`/gim, '<pre><code>$1</code></pre>')`,
-            // 关键修改：避免反引号冲突
             `                .replace(/\\` + "`" + `([^\\` + "`" + `]+)\\` + "`" + `/gim, '<code>$1</code>')`,
             `                .replace(/^\\> (.*$)/gim, '<blockquote>$1</blockquote>')`,
             `                .replace(/^\\- (.*$)/gim, '<ul><li>$1</li></ul>')`,
