@@ -2,7 +2,7 @@
   "name": "ai-commit-reviewer",
   "displayName": "AI Commit Reviewer",
   "description": "使用 AI 审核 Git Commit 代码",
-  "version": "1.0.0",
+  "version": "0.1.4",
   "engines": {
     "vscode": "^1.90.0"
   },

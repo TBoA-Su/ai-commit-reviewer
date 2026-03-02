@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; style-src ${cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
+    <title>AI Commit Reviewer</title>
+    <link rel="stylesheet" href="${styleUri}">
+</head>
+
+<body>
+    <!-- 导航栏 -->
+    <div class="navbar">
+        <button class="nav-tab active" data-page="review">
+            <span>🔍</span> 代码审核
+        </button>
+        <button class="nav-tab" data-page="settings">
+            <span>⚙️</span> 设置
+        </button>
+    </div>
+
+    <!-- 代码审核页面 -->
+    <div id="reviewPage" class="page active">
+        <!-- 步骤指示器 -->
+        <div class="step-indicator">
+            <div class="step active" id="step1">
+                <div class="step-number">1</div>
+                <span>获取 Diff</span>
+            </div>
+            <div class="step-divider"></div>
+            <div class="step" id="step2">
+                <div class="step-number">2</div>
+                <span>AI 评估</span>
+            </div>
+        </div>
+
+        <!-- 第一步：获取 Diff -->
+        <div id="diffSection">
+            <div class="section">
+                <div class="section-title">
+                    <div class="section-title-left">
+                        <span>📋</span>
+                        <span>获取 Git 变更</span>
+                    </div>
+                </div>
+                <p class="hint-text">
+                    点击按钮获取当前代码变更（staged changes 或最近 commit）
+                </p>
+                <button class="btn btn-primary" id="getDiffBtn">
+                    <span>📥</span> 获取代码变更
+                </button>
+            </div>
+        </div>
+
+        <!-- Diff 预览区域 -->
+        <div id="diffPreviewSection" class="hidden">
+            <div class="section">
+                <div class="section-title">
+                    <div class="section-title-left">
+                        <span>📝</span>
+                        <span>代码变更预览</span>
+                    </div>
+                    <span class="commit-badge" id="commitBadge"></span>
+                </div>
+                <div class="diff-container">
+                    <div class="diff-header">
+                        <span>变更统计</span>
+                        <div class="diff-stats">
+                            <span id="statFiles"></span>
+                            <span class="stat-additions" id="statAdditions"></span>
+                            <span class="stat-deletions" id="statDeletions"></span>
+                        </div>
+                    </div>
+                    <div class="diff-content" id="diffContent"></div>
+                </div>
+                <div class="action-buttons">
+                    <button class="btn btn-success" id="reviewBtn" style="flex: 1;">
+                        <span>🤖</span> 发送给 AI 评估
+                    </button>
+                    <button class="btn btn-secondary" id="refreshDiffBtn"
+                        style="width: auto; padding: 10px 16px; margin-top: 0;">
+                        <span>🔄</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 加载和错误 -->
+        <div class="loading" id="loading">
+            <div class="spinner"></div>
+            <div id="loadingText">正在处理...</div>
+        </div>
+
+        <div class="error" id="error"></div>
+
+        <!-- AI 审核结果 -->
+        <div id="reviewResultSection" class="hidden">
+            <div class="section">
+                <div class="section-title">
+                    <div class="section-title-left">
+                        <span>✅</span>
+                        <span>AI 代码质量评估</span>
+                    </div>
+                    <span class="commit-badge" id="resultCommitBadge"></span>
+                </div>
+                <div class="review-result" id="reviewContent"></div>
+                <button class="btn btn-secondary" id="newReviewBtn" style="margin-top: 12px;">
+                    <span>🔄</span> 开始新的审核
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 设置页面 -->
+    <div id="settingsPage" class="page">
+        <div class="section">
+            <div class="section-title">
+                <span>🔑</span> API 配置
+            </div>
+
+            <div class="form-group">
+                <label>API 地址</label>
+                <input type="text" id="apiUrl" placeholder="https://api.openai.com/v1/chat/completions">
+                <div class="hint">支持 OpenAI、Azure、Claude、本地模型等兼容 API</div>
+            </div>
+
+            <div class="form-group">
+                <label>API Key</label>
+                <input type="password" id="apiKey" placeholder="sk-...">
+                <div class="hint">您的 API 密钥将被安全存储在 VS Code 配置中</div>
+            </div>
+
+            <div class="form-group">
+                <label>模型名称</label>
+                <input type="text" id="model" list="modelList" placeholder="输入模型名称，如 gpt-4、claude-3-opus...">
+                <datalist id="modelList">
+                    <option value="gpt-3.5-turbo">
+                    <option value="gpt-4">
+                    <option value="gpt-4-turbo">
+                    <option value="gpt-4o">
+                    <option value="gpt-4o-mini">
+                    <option value="claude-3-opus-20240229">
+                    <option value="claude-3-sonnet-20240229">
+                    <option value="claude-3-haiku-20240307">
+                    <option value="claude-3-5-sonnet-20241022">
+                    <option value="llama3-8b">
+                    <option value="llama3-70b">
+                    <option value="qwen-turbo">
+                    <option value="qwen-max">
+                    <option value="deepseek-chat">
+                    <option value="deepseek-coder">
+                </datalist>
+                <div class="hint">支持任意模型：OpenAI、Claude、Llama、通义千问、DeepSeek 等</div>
+            </div>
+
+            <button class="btn btn-primary" id="saveBtn">
+                <span>💾</span> 保存配置
+            </button>
+        </div>
+
+        <div class="section">
+            <div class="section-title">
+                <span>ℹ️</span> 使用说明
+            </div>
+            <div class="usage-guide">
+                <p><strong>1.</strong> 在设置页面配置您的 AI API 信息</p>
+                <p><strong>2.</strong> 返回代码审核页面，点击"获取代码变更"</p>
+                <p><strong>3.</strong> 预览 diff 确认无误后，点击"发送给 AI 评估"</p>
+                <p><strong>4.</strong> 查看 AI 的代码质量分析报告</p>
+            </div>
+        </div>
+    </div>
+
+    <script nonce="${nonce}" src="${scriptUri}"></script>
+</body>
+
+</html>

@@ -1,0 +1,406 @@
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    font-family: var(--vscode-font-family);
+    font-size: var(--vscode-font-size);
+    color: var(--vscode-foreground);
+    background-color: var(--vscode-sidebar-background);
+    line-height: 1.6;
+}
+
+/* 导航栏 */
+.navbar {
+    display: flex;
+    background: var(--vscode-editor-background);
+    border-bottom: 1px solid var(--vscode-panel-border);
+    padding: 0 8px;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+}
+
+.nav-tab {
+    flex: 1;
+    padding: 12px 8px;
+    text-align: center;
+    cursor: pointer;
+    border: none;
+    background: transparent;
+    color: var(--vscode-foreground);
+    font-size: 13px;
+    font-weight: 500;
+    border-bottom: 2px solid transparent;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+}
+
+.nav-tab:hover {
+    background: var(--vscode-list-hoverBackground);
+}
+
+.nav-tab.active {
+    border-bottom-color: var(--vscode-button-background);
+    color: var(--vscode-button-background);
+}
+
+/* 页面容器 */
+.page {
+    display: none;
+    padding: 16px;
+}
+
+.page.active {
+    display: block;
+}
+
+/* 内容区域 */
+.section {
+    margin-bottom: 16px;
+    background: var(--vscode-editor-background);
+    border-radius: 8px;
+    padding: 16px;
+    border: 1px solid var(--vscode-panel-border);
+}
+
+.section-title {
+    font-size: 14px;
+    font-weight: 600;
+    margin-bottom: 12px;
+    color: var(--vscode-foreground);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+}
+
+.section-title-left {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.form-group {
+    margin-bottom: 12px;
+}
+
+label {
+    display: block;
+    margin-bottom: 6px;
+    font-size: 12px;
+    color: var(--vscode-descriptionForeground);
+    font-weight: 500;
+}
+
+input[type="text"],
+input[type="password"] {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid var(--vscode-input-border);
+    background: var(--vscode-input-background);
+    color: var(--vscode-input-foreground);
+    border-radius: 4px;
+    font-size: 13px;
+    outline: none;
+    transition: border-color 0.2s;
+}
+
+input:focus {
+    border-color: var(--vscode-focusBorder);
+}
+
+.btn {
+    width: 100%;
+    padding: 10px;
+    border: none;
+    border-radius: 4px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+}
+
+.btn-primary {
+    background: var(--vscode-button-background);
+    color: var(--vscode-button-foreground);
+}
+
+.btn-primary:hover {
+    background: var(--vscode-button-hoverBackground);
+}
+
+.btn-secondary {
+    background: var(--vscode-button-secondaryBackground);
+    color: var(--vscode-button-secondaryForeground);
+    margin-top: 8px;
+}
+
+.btn-success {
+    background: var(--vscode-testing-iconPassed);
+    color: white;
+}
+
+.btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+/* Diff 容器 */
+.diff-container {
+    background: var(--vscode-textCodeBlock-background);
+    border-radius: 6px;
+    overflow: hidden;
+    margin-top: 12px;
+}
+
+.diff-header {
+    background: var(--vscode-titleBar-activeBackground);
+    padding: 8px 12px;
+    font-size: 11px;
+    font-family: monospace;
+    border-bottom: 1px solid var(--vscode-panel-border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.diff-stats {
+    display: flex;
+    gap: 12px;
+    font-size: 11px;
+}
+
+.stat-additions {
+    color: var(--vscode-gitDecoration-addedResourceForeground);
+}
+
+.stat-deletions {
+    color: var(--vscode-gitDecoration-deletedResourceForeground);
+}
+
+.diff-content {
+    padding: 12px;
+    font-family: var(--vscode-editor-font-family);
+    font-size: 12px;
+    max-height: 300px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
+    line-height: 1.5;
+}
+
+.diff-line {
+    padding: 1px 4px;
+    margin: 0 -12px;
+    padding-left: 12px;
+}
+
+.diff-addition {
+    background: var(--vscode-diffEditor-insertedLineBackground);
+    color: var(--vscode-gitDecoration-addedResourceForeground);
+}
+
+.diff-deletion {
+    background: var(--vscode-diffEditor-removedLineBackground);
+    color: var(--vscode-gitDecoration-deletedResourceForeground);
+}
+
+.diff-meta {
+    color: var(--vscode-descriptionForeground);
+    font-weight: 600;
+}
+
+/* 加载和错误 */
+.loading {
+    display: none;
+    text-align: center;
+    padding: 40px 20px;
+    color: var(--vscode-descriptionForeground);
+}
+
+.loading.active {
+    display: block;
+}
+
+.spinner {
+    display: inline-block;
+    width: 32px;
+    height: 32px;
+    border: 3px solid var(--vscode-button-background);
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+    margin-bottom: 12px;
+}
+
+@keyframes spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+.error {
+    display: none;
+    background: var(--vscode-inputValidation-errorBackground);
+    border: 1px solid var(--vscode-inputValidation-errorBorder);
+    color: var(--vscode-inputValidation-errorForeground);
+    padding: 12px;
+    border-radius: 4px;
+    margin-top: 12px;
+    font-size: 12px;
+}
+
+.error.active {
+    display: block;
+}
+
+/* 审核结果 */
+.review-result {
+    background: var(--vscode-textBlockQuote-background);
+    border-left: 3px solid var(--vscode-textBlockQuote-border);
+    padding: 16px;
+    border-radius: 0 4px 4px 0;
+    font-size: 13px;
+    line-height: 1.8;
+    overflow-x: auto;
+}
+
+.review-result h1,
+.review-result h2,
+.review-result h3 {
+    margin-top: 16px;
+    margin-bottom: 8px;
+    color: var(--vscode-foreground);
+}
+
+.review-result h1 {
+    font-size: 16px;
+    border-bottom: 1px solid var(--vscode-panel-border);
+    padding-bottom: 8px;
+}
+
+.review-result h2 {
+    font-size: 14px;
+    color: var(--vscode-button-background);
+}
+
+.review-result code {
+    background: var(--vscode-textCodeBlock-background);
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-family: var(--vscode-editor-font-family);
+    font-size: 12px;
+}
+
+.review-result pre {
+    background: var(--vscode-textCodeBlock-background);
+    padding: 12px;
+    border-radius: 4px;
+    overflow-x: auto;
+    margin: 8px 0;
+}
+
+/* 徽章和提示 */
+.commit-badge {
+    background: var(--vscode-badge-background);
+    color: var(--vscode-badge-foreground);
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-family: monospace;
+}
+
+.hint {
+    font-size: 11px;
+    color: var(--vscode-descriptionForeground);
+    margin-top: 4px;
+}
+
+.hint-text {
+    font-size: 12px;
+    color: var(--vscode-descriptionForeground);
+    margin-bottom: 12px;
+}
+
+/* 步骤指示器 */
+.step-indicator {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 16px;
+    padding: 12px;
+    background: var(--vscode-editor-background);
+    border-radius: 6px;
+    border: 1px solid var(--vscode-panel-border);
+}
+
+.step {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--vscode-descriptionForeground);
+}
+
+.step.active {
+    color: var(--vscode-button-background);
+    font-weight: 600;
+}
+
+.step-number {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: var(--vscode-badge-background);
+    color: var(--vscode-badge-foreground);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 700;
+}
+
+.step.active .step-number {
+    background: var(--vscode-button-background);
+    color: var(--vscode-button-foreground);
+}
+
+.step-divider {
+    flex: 1;
+    height: 1px;
+    background: var(--vscode-panel-border);
+    max-width: 30px;
+}
+
+/* 操作按钮组 */
+.action-buttons {
+    margin-top: 12px;
+    display: flex;
+    gap: 8px;
+}
+
+/* 使用说明 */
+.usage-guide {
+    font-size: 12px;
+    color: var(--vscode-descriptionForeground);
+    line-height: 1.8;
+}
+
+.usage-guide p {
+    margin-bottom: 8px;
+}
+
+/* 工具类 */
+.hidden {
+    display: none !important;
+}
