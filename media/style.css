@@ -400,6 +400,32 @@ input:focus {
     margin-bottom: 8px;
 }
 
+/* 复制按钮 */
+.btn-copy {
+    padding: 2px 8px;
+    border: 1px solid var(--vscode-panel-border);
+    background: var(--vscode-button-secondaryBackground);
+    color: var(--vscode-button-secondaryForeground);
+    border-radius: 3px;
+    font-size: 11px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    transition: all 0.15s;
+    white-space: nowrap;
+}
+
+.btn-copy:hover {
+    background: var(--vscode-button-secondaryHoverBackground);
+}
+
+.btn-copy.copied {
+    background: var(--vscode-testing-iconPassed);
+    color: #fff;
+    border-color: var(--vscode-testing-iconPassed);
+}
+
 /* 工具类 */
 .hidden {
     display: none !important;

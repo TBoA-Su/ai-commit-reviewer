@@ -27,26 +27,29 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
             ]
         };
 
-        webviewView.webview.html = this._getHtmlForWebview(webviewView.webview);
+        // 只在 webview 首次创建时设置 HTML，避免每次切换侧边栏都重新加载导致闪烁
+        if (!webviewView.webview.html) {
+            webviewView.webview.html = this._getHtmlForWebview(webviewView.webview);
 
-        webviewView.webview.onDidReceiveMessage(async (data) => {
-            switch (data.type) {
-                case 'saveConfig':
-                    await this._saveConfig(data.apiUrl, data.apiKey, data.model);
-                    break;
-                case 'getDiff':
-                    await this._getGitDiff();
-                    break;
-                case 'review':
-                    await this._performReview();
-                    break;
-                case 'getConfig':
-                    await this._sendConfigToWebview();
-                    break;
-            }
-        });
+            webviewView.webview.onDidReceiveMessage(async (data) => {
+                switch (data.type) {
+                    case 'saveConfig':
+                        await this._saveConfig(data.apiUrl, data.apiKey, data.model);
+                        break;
+                    case 'getDiff':
+                        await this._getGitDiff();
+                        break;
+                    case 'review':
+                        await this._performReview();
+                        break;
+                    case 'getConfig':
+                        await this._sendConfigToWebview();
+                        break;
+                }
+            });
 
-        this._sendConfigToWebview();
+            this._sendConfigToWebview();
+        }
     }
 
     private _getHtmlForWebview(webview: vscode.Webview): string {
@@ -309,8 +312,8 @@ ${diff}
                 ]
             };
             // Claude 使用 /v1/messages 端点
-            if (!apiUrl.includes('/messages')) {
-                apiUrl = apiUrl.replace(/\/v1\/.*$/, '/v1/messages');
+            if (!apiUrl.endsWith('/v1/messages')) {
+                apiUrl = apiUrl.replace(/\/v1.*$/, '') + '/v1/messages';
             }
         } else {
             // 默认使用 Chat Completions API 格式（OpenAI、Azure、兼容服务）

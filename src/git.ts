@@ -98,25 +98,27 @@ export async function getCommitMessage(repoPath: string): Promise<string> {
     }
 }
 
-// 新增：检查是否有任何变更（包括已提交、暂存和未暂存）
+// 检查是否有任何变更（包括已提交、暂存和未暂存）
 export async function hasAnyChanges(repoPath: string): Promise<boolean> {
     try {
-        // 检查是否有 staged changes
-        const { stdout: staged } = await execAsync('git diff --cached --quiet || echo "has_changes"', {
-            cwd: repoPath
-        });
-        if (staged.includes('has_changes')) return true;
+        // 检查是否有 staged changes（git diff --quiet 在有变更时返回非零退出码）
+        try {
+            await execAsync('git diff --cached --quiet', { cwd: repoPath });
+        } catch {
+            return true;
+        }
 
         // 检查是否有 unstaged changes
-        const { stdout: unstaged } = await execAsync('git diff --quiet || echo "has_changes"', {
-            cwd: repoPath
-        });
-        if (unstaged.includes('has_changes')) return true;
+        try {
+            await execAsync('git diff --quiet', { cwd: repoPath });
+        } catch {
+            return true;
+        }
 
         // 检查是否有 commit 历史
         try {
             await execAsync('git log -1 --oneline', { cwd: repoPath });
-            return true; // 有 commit 历史，视为有变更记录
+            return true;
         } catch {
             return false;
         }

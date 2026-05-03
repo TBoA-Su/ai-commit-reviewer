@@ -18,6 +18,7 @@
     const reviewBtn = document.getElementById('reviewBtn');
     const refreshDiffBtn = document.getElementById('refreshDiffBtn');
     const newReviewBtn = document.getElementById('newReviewBtn');
+    const copyDiffBtn = document.getElementById('copyDiffBtn');
 
     // Diff 显示元素
     const commitBadge = document.getElementById('commitBadge');
@@ -36,6 +37,9 @@
     const apiUrlInput = document.getElementById('apiUrl');
     const apiKeyInput = document.getElementById('apiKey');
     const saveBtn = document.getElementById('saveBtn');
+
+    // 存储原始 diff 文本用于复制
+    let currentRawDiff = '';
 
     // 导航切换
     navTabs.forEach(tab => {
@@ -72,6 +76,41 @@
     // 新的开始
     newReviewBtn.addEventListener('click', () => {
         resetToStep1();
+        saveState({ viewState: 'initial' });
+    });
+
+    // 复制 diff
+    copyDiffBtn.addEventListener('click', () => {
+        if (!currentRawDiff) return;
+
+        navigator.clipboard.writeText(currentRawDiff).then(() => {
+            copyDiffBtn.classList.add('copied');
+            copyDiffBtn.innerHTML = '<span>✅</span> 已复制';
+            setTimeout(() => {
+                copyDiffBtn.classList.remove('copied');
+                copyDiffBtn.innerHTML = '<span>📋</span> 复制';
+            }, 2000);
+        }).catch(() => {
+            // 降级方案：使用 execCommand
+            const textarea = document.createElement('textarea');
+            textarea.value = currentRawDiff;
+            textarea.style.position = 'fixed';
+            textarea.style.opacity = '0';
+            document.body.appendChild(textarea);
+            textarea.select();
+            try {
+                document.execCommand('copy');
+                copyDiffBtn.classList.add('copied');
+                copyDiffBtn.innerHTML = '<span>✅</span> 已复制';
+                setTimeout(() => {
+                    copyDiffBtn.classList.remove('copied');
+                    copyDiffBtn.innerHTML = '<span>📋</span> 复制';
+                }, 2000);
+            } catch (e) {
+                // 复制失败，静默处理
+            }
+            document.body.removeChild(textarea);
+        });
     });
 
     // 保存配置
@@ -94,6 +133,41 @@
         error.classList.remove('active');
         step1.classList.add('active');
         step2.classList.remove('active');
+        currentRawDiff = '';
+    }
+
+    // ---- 状态持久化 ----
+    function saveState(state) {
+        vscode.setState(state);
+    }
+
+    function restoreState() {
+        var state = vscode.getState();
+        if (!state) return;
+
+        if (state.viewState === 'diffPreview' && state.diff) {
+            diffSection.classList.add('hidden');
+            diffPreviewSection.classList.remove('hidden');
+            reviewResultSection.classList.add('hidden');
+            step1.classList.add('active');
+            step2.classList.remove('active');
+
+            currentRawDiff = state.diff;
+            commitBadge.textContent = state.commitHash || '';
+            statFiles.textContent = (state.stats ? state.stats.files : 0) + ' 个文件';
+            statAdditions.textContent = '+' + (state.stats ? state.stats.additions : 0);
+            statDeletions.textContent = '-' + (state.stats ? state.stats.deletions : 0);
+            diffContent.innerHTML = formatDiff(state.diff);
+        } else if (state.viewState === 'reviewResult' && state.result) {
+            diffSection.classList.add('hidden');
+            diffPreviewSection.classList.add('hidden');
+            reviewResultSection.classList.remove('hidden');
+            step1.classList.remove('active');
+            step2.classList.add('active');
+
+            resultCommitBadge.textContent = state.commitHash || '';
+            reviewContent.innerHTML = markdownToHtml(state.result);
+        }
     }
 
     // 处理消息
@@ -131,11 +205,19 @@
                 step1.classList.add('active');
                 step2.classList.remove('active');
 
+                currentRawDiff = msg.diff;
                 commitBadge.textContent = msg.commitHash;
                 statFiles.textContent = msg.stats.files + ' 个文件';
                 statAdditions.textContent = '+' + msg.stats.additions;
                 statDeletions.textContent = '-' + msg.stats.deletions;
                 diffContent.innerHTML = formatDiff(msg.diff);
+
+                saveState({
+                    viewState: 'diffPreview',
+                    diff: msg.diff,
+                    commitHash: msg.commitHash,
+                    stats: msg.stats
+                });
                 break;
 
             case 'reviewing':
@@ -166,10 +248,17 @@
 
                 resultCommitBadge.textContent = msg.commitHash;
                 reviewContent.innerHTML = markdownToHtml(msg.result);
+
+                saveState({
+                    viewState: 'reviewResult',
+                    result: msg.result,
+                    commitHash: msg.commitHash
+                });
                 break;
 
             case 'clear':
                 resetToStep1();
+                saveState({ viewState: 'initial' });
                 break;
         }
     });
@@ -195,21 +284,124 @@
         return div.innerHTML;
     }
 
-    // Markdown 转 HTML
+    // Markdown 转 HTML（修复列表和块级元素渲染）
     function markdownToHtml(md) {
-        return md
-            .replace(/^### (.*$)/gim, '<h3>$1</h3>')
-            .replace(/^## (.*$)/gim, '<h2>$1</h2>')
-            .replace(/^# (.*$)/gim, '<h1>$1</h1>')
-            .replace(/\*\*\*(.*?)\*\*\*/gim, '<strong><em>$1</em></strong>')
-            .replace(/\*\*(.*?)\*\*/gim, '<strong>$1</strong>')
-            .replace(/\*(.*?)\*/gim, '<em>$1</em>')
-            .replace(/~~(.*?)~~/gim, '<del>$1</del>')
-            .replace(/```([\s\S]*?)```/gim, '<pre><code>$1</code></pre>')
-            .replace(/`([^`]+)`/gim, '<code>$1</code>')
-            .replace(/^> (.*$)/gim, '<blockquote>$1</blockquote>')
-            .replace(/^- (.*$)/gim, '<ul><li>$1</li></ul>')
-            .replace(/^\d+\. (.*$)/gim, '<ol><li>$1</li></ol>')
-            .replace(/\n/gim, '<br>');
+        var lines = md.split('\n');
+        var html = '';
+        var inUl = false;
+        var inOl = false;
+        var inBlockquote = false;
+        var inPre = false;
+        var preContent = '';
+        var preLang = '';
+
+        function closeLists() {
+            if (inUl) { html += '</ul>'; inUl = false; }
+            if (inOl) { html += '</ol>'; inOl = false; }
+        }
+
+        function closeBlocks() {
+            closeLists();
+            if (inBlockquote) { html += '</blockquote>'; inBlockquote = false; }
+        }
+
+        function processInline(text) {
+            return text
+                .replace(/\*\*\*(.*?)\*\*\*/g, '<strong><em>$1</em></strong>')
+                .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+                .replace(/\*(.*?)\*/g, '<em>$1</em>')
+                .replace(/~~(.*?)~~/g, '<del>$1</del>')
+                .replace(/`([^`]+)`/g, '<code>$1</code>');
+        }
+
+        for (var i = 0; i < lines.length; i++) {
+            var line = lines[i];
+
+            // 代码块处理
+            if (line.match(/^```/)) {
+                if (!inPre) {
+                    closeBlocks();
+                    inPre = true;
+                    preLang = line.replace(/^```/, '').trim();
+                    preContent = '';
+                    continue;
+                } else {
+                    html += '<pre><code>' + escapeHtml(preContent) + '</code></pre>';
+                    inPre = false;
+                    preContent = '';
+                    preLang = '';
+                    continue;
+                }
+            }
+
+            if (inPre) {
+                preContent += (preContent ? '\n' : '') + line;
+                continue;
+            }
+
+            // 标题
+            if (line.match(/^### (.+)/)) {
+                closeBlocks();
+                html += '<h3>' + processInline(line.replace(/^### /, '')) + '</h3>';
+                continue;
+            }
+            if (line.match(/^## (.+)/)) {
+                closeBlocks();
+                html += '<h2>' + processInline(line.replace(/^## /, '')) + '</h2>';
+                continue;
+            }
+            if (line.match(/^# (.+)/)) {
+                closeBlocks();
+                html += '<h1>' + processInline(line.replace(/^# /, '')) + '</h1>';
+                continue;
+            }
+
+            // 空行 → 关闭列表和引用
+            if (line.trim() === '') {
+                closeBlocks();
+                continue;
+            }
+
+            // 引用
+            if (line.match(/^> (.+)/)) {
+                closeLists();
+                if (!inBlockquote) { html += '<blockquote>'; inBlockquote = true; }
+                html += '<p>' + processInline(line.replace(/^> /, '')) + '</p>';
+                continue;
+            }
+
+            // 无序列表
+            var ulMatch = line.match(/^- (.+)/);
+            if (ulMatch) {
+                if (inBlockquote) { html += '</blockquote>'; inBlockquote = false; }
+                if (inOl) { html += '</ol>'; inOl = false; }
+                if (!inUl) { html += '<ul>'; inUl = true; }
+                html += '<li>' + processInline(ulMatch[1]) + '</li>';
+                continue;
+            }
+
+            // 有序列表
+            var olMatch = line.match(/^\d+\. (.+)/);
+            if (olMatch) {
+                if (inBlockquote) { html += '</blockquote>'; inBlockquote = false; }
+                if (inUl) { html += '</ul>'; inUl = false; }
+                if (!inOl) { html += '<ol>'; inOl = true; }
+                html += '<li>' + processInline(olMatch[1]) + '</li>';
+                continue;
+            }
+
+            // 普通段落
+            closeBlocks();
+            html += '<p>' + processInline(line) + '</p>';
+        }
+
+        // 关闭未闭合的标签
+        if (inPre) { html += '<pre><code>' + escapeHtml(preContent) + '</code></pre>'; }
+        closeBlocks();
+
+        return html;
     }
+
+    // 恢复上次的状态
+    restoreState();
 })();
